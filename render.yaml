@@ -3,7 +3,7 @@ services:
   name: baseball-dashboard
   env: python
   buildCommand: "pip install -r requirements.txt"
-  startCommand: "streamlit run baseball_dashboard_program.py"
+  startCommand: "streamlit run prog5_dashboard.py"
   envVars:
   - key: PYTHON_VERSION
     value: "3.9.18" # Or your desired Python version
