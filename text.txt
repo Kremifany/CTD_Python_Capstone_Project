@@ -1,0 +1,311 @@
+import pandas as pd
+
+original_df = pd.read_csv("batting_avg_league_leaders.csv")
+
+Filter invalid rows
+valid_year = original_df["Year"].notna() & (original_df["Year"].str.lower() != "year")
+valid_league = original_df["League"].isin(["AL", "NL"])
+valid_avg = original_df["AVG"].str.contains(r"\d", na=False)
+
+Combine all valid conditions
+is_valid = valid_year & valid_league & valid_avg
+
+Separate valid and removed rows
+removed_rows = original_df[is_valid == False]
+cleaned_rows = original_df[is_valid == True]
+
+Save removed rows
+removed_rows.to_csv("removed.txt", index=False, sep="\t")
+
+Clean the valid data
+df = cleaned_rows.copy()
+df["Year"] = df["Year"].astype(int)
+df["AVG"] = df["AVG"].astype(str).str.extract(r"([\d.]+)")[0].astype(float)
+df["Player"] = df["Player"].astype(str).str.strip()
+df["Team"] = df["Team"].astype(str).str.strip()
+df = df[df["AVG"] > 0]
+
+Save final cleaned data
+df.to_csv("batting_avg_cleaned.csv", index=False)
+
+Print for CLI inspection
+print("\nRemoved rows:")
+print(removed_rows.to_string(index=False))
+print("\nSaved: batting_avg_cleaned.csv and removed.txt")
+
+
+
+import sqlite3
+
+def get_connection():
+    try:
+        return sqlite3.connect("batting_avg.db")
+    except sqlite3.Error as e:
+        print(f"Error connecting to DB: {e}")
+        return None
+
+def show_menu():
+    print("\nChoose a query:")
+    print("1. Top hitters by year")
+    print("2. Players with AVG above a threshold")
+    print("3. Players from a team")
+    print("4. Exit")
+
+def query_top_hitters_by_year(conn):
+    try:
+        year = input("Enter year (e.g., 2023): ").strip()
+        cursor = conn.execute("SELECT player, league, avg FROM batting_avg_leaders WHERE year = ? ORDER BY avg DESC", (year,))
+        results = cursor.fetchall()
+        if results:
+            print(f"\nTop hitters in {year}:")
+            for row in results:
+                print(f"{row[0]} ({row[1]}) - AVG: {row[2]}")
+        else:
+            print("No results found.")
+    except Exception as e:
+        print(f"Error: {e}")
+
+def query_avg_threshold(conn):
+    try:
+        threshold = float(input("Enter AVG threshold (e.g., 0.35): ").strip())
+        cursor = conn.execute("SELECT year, player, avg FROM batting_avg_leaders WHERE avg >= ? ORDER BY avg DESC", (threshold,))
+        results = cursor.fetchall()
+        if results:
+            print(f"\nPlayers with AVG ≥ {threshold}:")
+            for row in results:
+                print(f"{row[1]} ({row[0]}) - AVG: {row[2]}")
+        else:
+            print("No players found.")
+    except Exception as e:
+        print(f"Error: {e}")
+
+def query_team(conn):
+    try:
+        team = input("Enter team name (e.g., Miami): ").strip()
+        cursor = conn.execute("SELECT year, player, avg FROM batting_avg_leaders WHERE team LIKE ? ORDER BY year DESC", (f"%{team}%",))
+        results = cursor.fetchall()
+        if results:
+            print(f"\nPlayers from {team}:")
+            for row in results:
+                print(f"{row[1]} ({row[0]}) - AVG: {row[2]}")
+        else:
+            print("No players found.")
+    except Exception as e:
+        print(f"Error: {e}")
+
+def main():
+    conn = get_connection()
+    if not conn:
+        return
+
+    try:
+        while True:
+            show_menu()
+            choice = input("Choice: ").strip()
+            if choice == "1":
+                query_top_hitters_by_year(conn)
+            elif choice == "2":
+                query_avg_threshold(conn)
+            elif choice == "3":
+                query_team(conn)
+            elif choice == "4":
+                print("Goodbye.")
+                break
+            else:
+                print("Invalid option.")
+    finally:
+        conn.close()
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+import streamlit as st
+import pandas as pd
+import altair as alt
+
+# Load cleaned CSV
+df = pd.read_csv("batting_avg_cleaned.csv")
+
+# Ensure Year is numeric and remove any thousand separator issues
+df["Year"] = pd.to_numeric(df["Year"], errors="coerce")
+df.dropna(subset=["Year"], inplace=True)
+df["Year"] = df["Year"].astype(int)
+
+# Sidebar filters
+st.sidebar.title("Filter Options")
+min_year, max_year = int(df["Year"].min()), int(df["Year"].max())
+year_range = st.sidebar.slider("Select Year Range", min_year, max_year, (2000, max_year))
+avg_threshold = st.sidebar.slider("Minimum Batting Average", 0.25, 0.45, 0.30, 0.005)
+league = st.sidebar.multiselect("Select League(s)", ["AL", "NL"], default=["AL", "NL"])
+
+# Filtered DataFrame
+filtered_df = df[
+    (df["Year"] >= year_range[0]) &
+    (df["Year"] <= year_range[1]) &
+    (df["AVG"] >= avg_threshold) &
+    (df["League"].isin(league))
+]
+
+st.title("MLB Batting Average Leaders Dashboard")
+st.markdown("Explore league-leading hitters by year, team, and AVG.")
+
+# Bar chart: Top Hitters by AVG across selected years
+st.subheader(f"Top Hitters by AVG ({year_range[0]}–{year_range[1]})")
+top_hitters = (
+    filtered_df.groupby("Player", as_index=False)
+    .agg({"AVG": "max"})
+    .sort_values("AVG", ascending=False)
+    .head(10)
+)
+
+if not top_hitters.empty:
+    bar_chart = alt.Chart(top_hitters).mark_bar().encode(
+        x=alt.X("Player:N", sort="-y", title="Player"),
+        y=alt.Y("AVG:Q", title="Batting Average"),
+        color=alt.Color("Player:N", legend=None)
+    ).properties(
+        width=600,
+        height=400
+    )
+    st.altair_chart(bar_chart, use_container_width=True)
+else:
+    st.info("No hitters meet the selected criteria.")
+
+# Line chart: Best AVG per year
+st.subheader("Best AVG Per Year")
+top_avgs = df[df["League"].isin(league)]
+top_avgs = top_avgs.groupby("Year")["AVG"].max().reset_index()
+top_avgs["Year"] = top_avgs["Year"].astype(str)
+st.line_chart(top_avgs.set_index("Year"))
+
+# Bar chart: Count of players by Team (top 10 teams)
+st.subheader("Most Frequent League Leaders by Team")
+team_counts_df = filtered_df["Team"].value_counts().nlargest(10).reset_index()
+team_counts_df.columns = ["Team", "Count"]
+
+if not team_counts_df.empty:
+    bar_chart = alt.Chart(team_counts_df).mark_bar().encode(
+        x=alt.X("Team:N", sort="-y"),
+        y="Count:Q",
+        color="Team:N"
+    )
+    st.altair_chart(bar_chart, use_container_width=True)
+else:
+    st.info("No team data available for the selected filters.")
+
+# Generate distinct HSL color strings for each team
+def generate_hsl_colors(n):
+    colors = []
+    for i in range(n):
+        hue = int((i * 137.508) % 360)  
+        lightness = 45 + (i % 3) * 10   
+        colors.append(f"hsl({hue}, 70%, {lightness}%)")
+    return colors
+
+# Prepare data
+team_avg = df.groupby(["Player", "Team"], as_index=False)["AVG"].max()
+team_avg_grouped = (
+    team_avg.groupby("Team", as_index=False)["AVG"]
+    .mean()
+    .sort_values("AVG", ascending=False)
+)
+
+# Generate colors and build scale
+teams = team_avg_grouped["Team"].tolist()
+colors = generate_hsl_colors(len(teams))
+color_scale = alt.Scale(domain=teams, range=colors)
+
+# Build pie chart
+pie_chart = alt.Chart(team_avg_grouped).mark_arc().encode(
+    theta=alt.Theta(field="AVG", type="quantitative"),
+    color=alt.Color(field="Team", type="nominal", scale=color_scale),
+    tooltip=["Team", "AVG"]
+).properties(width=600, height=600)
+
+st.altair_chart(pie_chart, use_container_width=True)
+
+# Table of results
+st.subheader("Filtered Player Data")
+display_df = filtered_df.copy()
+display_df["Year"] = display_df["Year"].astype(str)
+display_df["AVG"] = display_df["AVG"].round(3) 
+st.dataframe(display_df)
+
+st.markdown("Data Source: Baseball Almanac - Top League Batting Averages")
+
+
+
+By completing this project, students will:
+
+Use Selenium to scrape data from a website.
+Clean and transform the raw data into a structured format.
+Store the data in a SQLite database, with each CSV file as a separate table.
+Query the database using joins via command line.
+Build an interactive dashboard using Streamlit or Dash to display the insights.
+Projects
+1. Web Scraping Program
+Goal: Scrape data from Major League Baseball History.
+Steps:
+Use Selenium to retrieve the data.
+Extract relevant details (year, event names, statistics).
+Save the raw data into CSV format for each dataset.
+Handle challenges such as:
+Pagination
+Missing tags
+User-agent headers for mimicking a browser request.
+2. Database Import Program
+Goal: Import the CSV files into a SQLite database.
+Steps:
+Create a program that imports each CSV as a separate table in the database.
+Ensure proper data types (numeric, date, etc.) during the import.
+Check for errors during the import process.
+3. Database Query Program
+Goal: Query the database via the command line.
+Steps:
+Allow users to run queries, including at least joins (e.g., combining player stats with event data).
+Ensure the program can handle flexible querying, allowing for filtering by year, event, or player statistics.
+Handle errors and display results appropriately.
+4. Dashboard Program
+Goal: Build an interactive dashboard using Streamlit or Dash.
+Steps:
+Display insights from the data using at least three visualizations.
+Implement interactive features like:
+Dropdowns to select years or event categories.
+Sliders to adjust the data view.
+Dynamically update the visualizations based on user input.
+Deploy the dashboard on Render or Streamlit.io for public access.
+All four programs will be included in the GitHub repository, and the dashboard will be deployed for public access.
+
+Data Sources
+Students will scrape data from the Major League Baseball History Site. This site contains historical data such as notable events, player statistics, and achievements year by year.
+
+Rubric for Lesson 14 - Web Scraping and Dashboard Project
+Web Scraping
+Uses Selenium to retrieve data from the web.
+Handles common scraping challenges like missing tags, pagination, and user-agent headers.
+Saves raw data as a CSV.
+Avoids scraping duplication or redundant requests.
+Data Cleaning & Transformation
+Loads raw data into a Pandas DataFrame.
+Cleans missing, duplicate, or malformed entries effectively.
+Applies appropriate transformations, groupings, or filters.
+Shows before/after stages of cleaning or reshaping.
+Data Visualization
+Includes at least three visualizations using Streamlit or Dash.
+Visuals are relevant, well-labeled, and support the data story.
+User interactions such as dropdowns or sliders are implemented.
+Visualizations respond correctly to user input or filters.
+Dashboard / App Functionality
+Built with Streamlit or Dash to display data and insights.
+Features clean layout and responsive components.
+Allows users to explore different aspects of the data.
+Provides clear titles, instructions, and descriptions for user guidance.
+Code Quality & Documentation
+Code is well-organized and split into logical sections or functions.
+Inline comments or markdown cells explain major steps or choices.
+All dependencies are listed and environment setup is reproducible.
+Comments or markdown cells explain logic.
+README.md includes summary, setup steps, and a screenshot.
