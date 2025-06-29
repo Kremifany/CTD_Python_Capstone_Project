@@ -2,7 +2,10 @@ services:
 - type: web
   name: baseball-dashboard
   env: python
-  buildCommand: "pip install -r requirements.txt"
+  # Add system-level build dependencies before installing Python packages
+  buildCommand: |
+    sudo apt-get update && sudo apt-get install -y build-essential python3-dev
+    pip install -r requirements.txt
   startCommand: "streamlit run prog5_dashboard.py"
   envVars:
   - key: PYTHON_VERSION
